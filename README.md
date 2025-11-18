@@ -6,7 +6,7 @@ A simple web application for comparing responses across multiple AI foundation m
 
 - Submit prompts to multiple AI models simultaneously
 - Support for Anthropic Claude, OpenAI GPT, and Google Gemini models
-- View extended thinking for supported models (Claude 3.7 Sonnet, Claude 3.5 Sonnet, Gemini models)
+- View extended thinking for supported models (Claude 4.1 Opus, GPT-5.1, Gemini 2.5 Pro)
 - Automatic inconsistency detection using your default model
 - Generate detailed critiques comparing model responses
 - Clean, collapsible UI for managing multiple query rounds
@@ -15,22 +15,13 @@ A simple web application for comparing responses across multiple AI foundation m
 ## Supported Models
 
 ### Anthropic Claude
-- Claude 3.7 Sonnet (with extended thinking)
-- Claude 3.5 Sonnet (with extended thinking)
-- Claude 3 Opus
+- Claude 4.1 Opus (with extended thinking)
 
 ### OpenAI
-- GPT-4
-- GPT-4 Turbo
-- GPT-3.5 Turbo
-- o1
-- o1-mini
+- GPT-5.1 (with extended thinking)
 
 ### Google Gemini
-- Gemini 2.0 Flash (Experimental) (with thinking)
-- Gemini 1.5 Pro (with thinking)
-- Gemini 1.5 Flash (with thinking)
-- Gemini 1.5 Flash-8B (with thinking)
+- Gemini 2.5 Pro (with extended thinking)
 
 ## Prerequisites
 
