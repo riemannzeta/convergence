@@ -5,8 +5,8 @@ A simple web application for comparing responses across multiple AI foundation m
 ## Features
 
 - Submit prompts to multiple AI models simultaneously
-- Support for Anthropic Claude and OpenAI GPT models
-- View extended thinking for supported models (Claude 3.7 Sonnet, Claude 3.5 Sonnet)
+- Support for Anthropic Claude, OpenAI GPT, and Google Gemini models
+- View extended thinking for supported models (Claude 3.7 Sonnet, Claude 3.5 Sonnet, Gemini models)
 - Automatic inconsistency detection using your default model
 - Generate detailed critiques comparing model responses
 - Clean, collapsible UI for managing multiple query rounds
@@ -26,6 +26,12 @@ A simple web application for comparing responses across multiple AI foundation m
 - o1
 - o1-mini
 
+### Google Gemini
+- Gemini 2.0 Flash (Experimental) (with thinking)
+- Gemini 1.5 Pro (with thinking)
+- Gemini 1.5 Flash (with thinking)
+- Gemini 1.5 Flash-8B (with thinking)
+
 ## Prerequisites
 
 - Node.js (v18 or higher recommended)
@@ -33,6 +39,7 @@ A simple web application for comparing responses across multiple AI foundation m
 - API keys for the services you want to use:
   - [Anthropic API key](https://console.anthropic.com/)
   - [OpenAI API key](https://platform.openai.com/api-keys)
+  - [Google API key](https://aistudio.google.com/app/apikey)
 
 ## Installation
 
@@ -55,6 +62,7 @@ cp .env.example .env
 ```bash
 ANTHROPIC_API_KEY=your_anthropic_api_key_here
 OPENAI_API_KEY=your_openai_api_key_here
+GOOGLE_API_KEY=your_google_api_key_here
 PORT=3000
 ```
 
@@ -110,7 +118,7 @@ When you click "Generate Detailed Critique", the default model will:
 ### Backend (server.js)
 - Express.js server handling API requests
 - Secure API key management via environment variables
-- Support for multiple AI providers (Anthropic, OpenAI)
+- Support for multiple AI providers (Anthropic, OpenAI, Google)
 - Parallel query execution for better performance
 - Inconsistency analysis and critique generation
 
@@ -135,7 +143,7 @@ Edit `server.js` and add new model configurations to the `MODELS` object:
 
 ```javascript
 'your-model-key': {
-  provider: 'anthropic', // or 'openai'
+  provider: 'anthropic', // or 'openai' or 'google'
   displayName: 'Your Model Name',
   modelId: 'api-model-id',
   supportsThinking: false

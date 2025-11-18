@@ -5,6 +5,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 
 dotenv.config();
 
@@ -26,6 +27,10 @@ const anthropic = process.env.ANTHROPIC_API_KEY ? new Anthropic({
 const openai = process.env.OPENAI_API_KEY ? new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 }) : null;
+
+const google = process.env.GOOGLE_API_KEY ? new GoogleGenerativeAI(
+  process.env.GOOGLE_API_KEY
+) : null;
 
 // Model configurations
 const MODELS = {
@@ -76,6 +81,30 @@ const MODELS = {
     displayName: 'OpenAI o1-mini',
     modelId: 'o1-mini',
     supportsThinking: false
+  },
+  'gemini-2.0-flash-exp': {
+    provider: 'google',
+    displayName: 'Gemini 2.0 Flash (Experimental)',
+    modelId: 'gemini-2.0-flash-exp',
+    supportsThinking: true
+  },
+  'gemini-1.5-pro': {
+    provider: 'google',
+    displayName: 'Gemini 1.5 Pro',
+    modelId: 'gemini-1.5-pro',
+    supportsThinking: true
+  },
+  'gemini-1.5-flash': {
+    provider: 'google',
+    displayName: 'Gemini 1.5 Flash',
+    modelId: 'gemini-1.5-flash',
+    supportsThinking: true
+  },
+  'gemini-1.5-flash-8b': {
+    provider: 'google',
+    displayName: 'Gemini 1.5 Flash-8B',
+    modelId: 'gemini-1.5-flash-8b',
+    supportsThinking: true
   }
 };
 
@@ -154,6 +183,56 @@ async function callOpenAI(modelConfig, prompt, systemPrompt = null) {
   };
 }
 
+// Call Google Gemini API
+async function callGemini(modelConfig, prompt, systemPrompt = null) {
+  if (!google) {
+    throw new Error('Google API key not configured');
+  }
+
+  const model = google.getGenerativeModel({
+    model: modelConfig.modelId,
+    systemInstruction: systemPrompt || undefined
+  });
+
+  const generationConfig = {
+    maxOutputTokens: 4096,
+  };
+
+  // Add thinking support for models that support it
+  if (modelConfig.supportsThinking) {
+    generationConfig.thinkingConfig = {
+      mode: 'THINKING'
+    };
+  }
+
+  const result = await model.generateContent({
+    contents: [{ role: 'user', parts: [{ text: prompt }] }],
+    generationConfig
+  });
+
+  const response = result.response;
+  let thinkingContent = '';
+  let textContent = '';
+
+  // Extract thinking and text from response
+  for (const candidate of response.candidates || []) {
+    for (const part of candidate.content?.parts || []) {
+      if (part.thought) {
+        thinkingContent += part.thought + '\n';
+      } else if (part.text) {
+        textContent += part.text;
+      }
+    }
+  }
+
+  return {
+    text: textContent,
+    thinking: thinkingContent.trim(),
+    model: modelConfig.displayName,
+    usage: response.usageMetadata
+  };
+}
+
 // Generic model caller
 async function callModel(modelKey, prompt, systemPrompt = null) {
   const modelConfig = MODELS[modelKey];
@@ -166,6 +245,8 @@ async function callModel(modelKey, prompt, systemPrompt = null) {
     return await callAnthropic(modelConfig, prompt, systemPrompt);
   } else if (modelConfig.provider === 'openai') {
     return await callOpenAI(modelConfig, prompt, systemPrompt);
+  } else if (modelConfig.provider === 'google') {
+    return await callGemini(modelConfig, prompt, systemPrompt);
   } else {
     throw new Error(`Unknown provider: ${modelConfig.provider}`);
   }
@@ -179,6 +260,8 @@ app.get('/api/models', (req, res) => {
     if (config.provider === 'anthropic' && anthropic) {
       availableModels[key] = config;
     } else if (config.provider === 'openai' && openai) {
+      availableModels[key] = config;
+    } else if (config.provider === 'google' && google) {
       availableModels[key] = config;
     }
   }
@@ -291,4 +374,5 @@ app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
   console.log(`Anthropic API: ${anthropic ? 'Configured' : 'Not configured'}`);
   console.log(`OpenAI API: ${openai ? 'Configured' : 'Not configured'}`);
+  console.log(`Google API: ${google ? 'Configured' : 'Not configured'}`);
 });
