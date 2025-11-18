@@ -34,78 +34,24 @@ const google = process.env.GOOGLE_API_KEY ? new GoogleGenerativeAI(
 
 // Model configurations
 const MODELS = {
-  'claude-3-7-sonnet': {
+  'claude-4-1-opus': {
     provider: 'anthropic',
-    displayName: 'Claude 3.7 Sonnet',
-    modelId: 'claude-3-7-sonnet-20250219',
+    displayName: 'Claude 4.1 Opus',
+    modelId: 'claude-opus-4-1-20250805',
     supportsThinking: true
   },
-  'claude-3-5-sonnet': {
-    provider: 'anthropic',
-    displayName: 'Claude 3.5 Sonnet',
-    modelId: 'claude-3-5-sonnet-20241022',
+  'gpt-5-1': {
+    provider: 'openai',
+    displayName: 'GPT-5.1',
+    modelId: 'gpt-5.1-2025-11-13',
     supportsThinking: true
   },
-  'claude-3-opus': {
-    provider: 'anthropic',
-    displayName: 'Claude 3 Opus',
-    modelId: 'claude-3-opus-20240229',
-    supportsThinking: false
-  },
-  'gpt-4': {
-    provider: 'openai',
-    displayName: 'GPT-4',
-    modelId: 'gpt-4',
-    supportsThinking: false
-  },
-  'gpt-4-turbo': {
-    provider: 'openai',
-    displayName: 'GPT-4 Turbo',
-    modelId: 'gpt-4-turbo-preview',
-    supportsThinking: false
-  },
-  'gpt-3.5-turbo': {
-    provider: 'openai',
-    displayName: 'GPT-3.5 Turbo',
-    modelId: 'gpt-3.5-turbo',
-    supportsThinking: false
-  },
-  'o1': {
-    provider: 'openai',
-    displayName: 'OpenAI o1',
-    modelId: 'o1',
-    supportsThinking: false
-  },
-  'o1-mini': {
-    provider: 'openai',
-    displayName: 'OpenAI o1-mini',
-    modelId: 'o1-mini',
-    supportsThinking: false
-  },
-  'gemini-2.0-flash-exp': {
+  'gemini-2.5-pro': {
     provider: 'google',
-    displayName: 'Gemini 2.0 Flash (Experimental)',
-    modelId: 'gemini-2.0-flash-exp',
+    displayName: 'Gemini 2.5 Pro',
+    modelId: 'gemini-2.5-pro',
     supportsThinking: true
   },
-  'gemini-1.5-pro': {
-    provider: 'google',
-    displayName: 'Gemini 1.5 Pro',
-    modelId: 'gemini-1.5-pro',
-    supportsThinking: true
-  },
-  'gemini-1.5-flash': {
-    provider: 'google',
-    displayName: 'Gemini 1.5 Flash',
-    modelId: 'gemini-1.5-flash',
-    supportsThinking: true
-  },
-  'gemini-1.5-flash-8b': {
-    provider: 'google',
-    displayName: 'Gemini 1.5 Flash-8B',
-    modelId: 'gemini-1.5-flash-8b',
-    supportsThinking: true
-  }
 };
 
 // Call Anthropic API
@@ -172,7 +118,7 @@ async function callOpenAI(modelConfig, prompt, systemPrompt = null) {
   const response = await openai.chat.completions.create({
     model: modelConfig.modelId,
     messages: messages,
-    max_tokens: 4096,
+    max_completion_tokens: 4096,
   });
 
   return {
@@ -197,13 +143,6 @@ async function callGemini(modelConfig, prompt, systemPrompt = null) {
   const generationConfig = {
     maxOutputTokens: 4096,
   };
-
-  // Add thinking support for models that support it
-  if (modelConfig.supportsThinking) {
-    generationConfig.thinkingConfig = {
-      mode: 'THINKING'
-    };
-  }
 
   const result = await model.generateContent({
     contents: [{ role: 'user', parts: [{ text: prompt }] }],
