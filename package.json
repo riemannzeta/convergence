@@ -1,0 +1,21 @@
+{
+  "name": "convergence",
+  "version": "1.0.0",
+  "description": "Multi-model comparison web app for testing AI model responses",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "keywords": ["ai", "llm", "comparison", "multi-model"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.18.2",
+    "dotenv": "^16.3.1",
+    "cors": "^2.8.5",
+    "@anthropic-ai/sdk": "^0.27.0",
+    "openai": "^4.20.1"
+  }
+}

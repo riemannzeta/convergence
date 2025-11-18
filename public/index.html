@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Convergence - Multi-Model AI Comparison</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Convergence</h1>
+            <p class="subtitle">Compare responses across multiple AI models</p>
+        </header>
+
+        <div class="input-section">
+            <div class="form-group">
+                <label for="prompt">Enter your prompt:</label>
+                <textarea id="prompt" rows="4" placeholder="Type your question or prompt here..."></textarea>
+            </div>
+
+            <div class="form-group">
+                <label>Select Models:</label>
+                <div id="model-selection" class="model-grid">
+                    <p class="loading">Loading available models...</p>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label for="default-model">Default Model (for analysis):</label>
+                <select id="default-model">
+                    <option value="">Select default model...</option>
+                </select>
+            </div>
+
+            <button id="submit-btn" class="btn btn-primary" disabled>Submit Query</button>
+        </div>
+
+        <div id="rounds-container"></div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
