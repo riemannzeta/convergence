@@ -306,6 +306,21 @@ textarea {
     color: var(--text-primary);
     white-space: pre-wrap;
     line-height: 1.8;
+    max-width: 80ch;
+    margin: 0 auto; /* Center the text if it's narrower than the container */
+}
+
+.response-text ul, .response-text ol {
+    padding-left: 2rem;
+    margin-bottom: 1rem;
+}
+
+.response-text li {
+    margin-bottom: 0.5rem;
+}
+
+.response-text p {
+    margin-bottom: 1rem;
 }
 
 .error-message {

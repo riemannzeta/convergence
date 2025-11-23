@@ -34,6 +34,7 @@ async function loadModels() {
             checkbox.type = 'checkbox';
             checkbox.id = `model-${key}`;
             checkbox.value = key;
+            checkbox.checked = true; // Check all models by default
             checkbox.addEventListener('change', updateSubmitButton);
 
             const label = document.createElement('label');
@@ -104,6 +105,11 @@ async function handleSubmit() {
         return;
     }
 
+    await submitQuery(prompt, selectedModels, defaultModel);
+}
+
+// Submit query (shared by main submit and resubmit)
+async function submitQuery(prompt, selectedModels, defaultModel) {
     // Collapse previous rounds
     collapsePreviousRounds();
 
@@ -114,24 +120,25 @@ async function handleSubmit() {
         prompt: prompt,
         models: selectedModels,
         defaultModel: defaultModel,
-        results: null,
+        results: [],
         inconsistencyAnalysis: null,
         critique: null
     };
     roundsData.push(roundData);
 
-    // Create round UI
-    const roundDiv = createRoundUI(roundData);
+    // Create round UI with placeholder cards
+    const roundDiv = createRoundUIWithPlaceholders(roundData);
     document.getElementById('rounds-container').appendChild(roundDiv);
 
     // Scroll to new round
     roundDiv.scrollIntoView({ behavior: 'smooth', block: 'start' });
 
     // Disable submit button during processing
-    document.getElementById('submit-btn').disabled = true;
+    const submitBtn = document.getElementById('submit-btn');
+    if (submitBtn) submitBtn.disabled = true;
 
     try {
-        // Submit query
+        // Submit query and handle streaming response
         const response = await fetch(`${API_BASE}/api/query`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -142,18 +149,243 @@ async function handleSubmit() {
             })
         });
 
-        const data = await response.json();
-        roundData.results = data.results;
-        roundData.inconsistencyAnalysis = data.inconsistencyAnalysis;
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
 
-        // Update UI with results
-        updateRoundResults(roundDiv, roundData);
+        while (true) {
+            const { done, value } = await reader.read();
+
+            if (done) break;
+
+            // Decode the chunk and add it to the buffer
+            buffer += decoder.decode(value, { stream: true });
+
+            // Process complete lines
+            const lines = buffer.split('\n');
+            buffer = lines.pop(); // Keep the incomplete line in the buffer
+
+            for (const line of lines) {
+                if (line.trim()) {
+                    try {
+                        const message = JSON.parse(line);
+                        handleStreamMessage(message, roundDiv, roundData);
+                    } catch (error) {
+                        console.error('Error parsing stream message:', error, line);
+                    }
+                }
+            }
+        }
     } catch (error) {
         console.error('Error submitting query:', error);
-        showError(roundDiv, 'Error processing query. Please check the console for details.');
+        showError(roundDiv.querySelector('.round-content'), 'Error processing query. Please check the console for details.');
     } finally {
-        document.getElementById('submit-btn').disabled = false;
+        if (submitBtn) submitBtn.disabled = false;
     }
+}
+
+// Handle streaming message
+function handleStreamMessage(message, roundDiv, roundData) {
+    if (message.type === 'result') {
+        // Update the placeholder card for this model
+        const result = message.data;
+        roundData.results.push(result);
+        updateResponseCard(roundDiv, result);
+    } else if (message.type === 'analysis') {
+        // Add inconsistency analysis
+        roundData.inconsistencyAnalysis = message.data.inconsistencyAnalysis;
+        addInconsistencyAnalysis(roundDiv, roundData);
+    } else if (message.type === 'error') {
+        console.error('Stream error:', message.data.error);
+        showError(roundDiv.querySelector('.round-content'), message.data.error);
+    }
+}
+
+// Create round UI with placeholder cards
+function createRoundUIWithPlaceholders(roundData) {
+    const roundDiv = document.createElement('div');
+    roundDiv.className = 'round';
+    roundDiv.id = `round-${roundData.round}`;
+
+    const header = document.createElement('div');
+    header.className = 'round-header';
+    header.innerHTML = `
+        <h2>Round ${roundData.round}</h2>
+        <button class="btn btn-secondary toggle-btn" onclick="toggleRound(${roundData.round})">Collapse</button>
+    `;
+
+    const content = document.createElement('div');
+    content.className = 'round-content';
+
+    const originalPromptDiv = document.createElement('div');
+    originalPromptDiv.className = 'original-prompt';
+    originalPromptDiv.innerHTML = `
+        <div class="original-prompt-label">Prompt</div>
+        <div class="original-prompt-text">${escapeHtml(roundData.prompt)}</div>
+    `;
+
+    content.appendChild(originalPromptDiv);
+
+    // Create placeholder response cards
+    const responsesGrid = document.createElement('div');
+    responsesGrid.className = 'responses-grid';
+    responsesGrid.id = `responses-grid-${roundData.round}`;
+
+    for (const modelKey of roundData.models) {
+        const modelConfig = availableModels[modelKey];
+        const placeholderCard = createPlaceholderCard(modelKey, modelConfig.displayName);
+        responsesGrid.appendChild(placeholderCard);
+    }
+
+    content.appendChild(responsesGrid);
+
+    roundDiv.appendChild(header);
+    roundDiv.appendChild(content);
+
+    return roundDiv;
+}
+
+// Create placeholder response card
+function createPlaceholderCard(modelKey, displayName) {
+    const card = document.createElement('div');
+    card.className = 'response-card loading';
+    card.id = `response-card-${modelKey}`;
+
+    const header = document.createElement('div');
+    header.className = 'response-header';
+
+    const modelName = document.createElement('div');
+    modelName.className = 'model-name';
+    modelName.textContent = displayName;
+
+    const statusBadge = document.createElement('div');
+    statusBadge.className = 'status-badge pending';
+    statusBadge.textContent = 'Loading...';
+
+    header.appendChild(modelName);
+    header.appendChild(statusBadge);
+    card.appendChild(header);
+
+    const loadingDiv = document.createElement('div');
+    loadingDiv.className = 'loading';
+    loadingDiv.textContent = 'Waiting for response...';
+    card.appendChild(loadingDiv);
+
+    return card;
+}
+
+// Update response card with actual result
+function updateResponseCard(roundDiv, result) {
+    const card = document.getElementById(`response-card-${result.modelKey}`);
+    if (!card) return;
+
+    // Clear loading state
+    card.className = result.success ? 'response-card' : 'response-card error';
+    card.innerHTML = '';
+
+    const header = document.createElement('div');
+    header.className = 'response-header';
+
+    const modelName = document.createElement('div');
+    modelName.className = 'model-name';
+    modelName.textContent = result.model || availableModels[result.modelKey]?.displayName || result.modelKey;
+
+    const statusBadge = document.createElement('div');
+    statusBadge.className = result.success ? 'status-badge success' : 'status-badge error';
+    statusBadge.textContent = result.success ? 'Success' : 'Error';
+
+    header.appendChild(modelName);
+    header.appendChild(statusBadge);
+    card.appendChild(header);
+
+    if (result.success) {
+        // Add thinking if available
+        if (result.thinking) {
+            const thinkingDiv = document.createElement('div');
+            thinkingDiv.className = 'thinking-section';
+            thinkingDiv.innerHTML = `
+                <div class="thinking-header">Thinking Process</div>
+                <div class="thinking-content">${renderMarkdown(result.thinking)}</div>
+            `;
+            card.appendChild(thinkingDiv);
+        }
+
+        // Add response text
+        const responseText = document.createElement('div');
+        responseText.className = 'response-text';
+        responseText.innerHTML = renderMarkdown(result.text);
+        card.appendChild(responseText);
+        
+        // Trigger MathJax
+        if (window.MathJax) {
+            window.MathJax.typesetPromise([card]);
+        }
+    } else {
+        const errorMessage = document.createElement('div');
+        errorMessage.className = 'error-message';
+        errorMessage.textContent = result.error;
+        card.appendChild(errorMessage);
+    }
+}
+
+// Add inconsistency analysis to round
+function addInconsistencyAnalysis(roundDiv, roundData) {
+    const content = roundDiv.querySelector('.round-content');
+
+    if (roundData.inconsistencyAnalysis) {
+        const analysisDiv = document.createElement('div');
+        analysisDiv.className = 'analysis-section';
+        
+        // Create checkboxes for models
+        let checkboxesHTML = '<div class="model-selection-resubmit" style="margin: 15px 0; display: flex; gap: 10px; flex-wrap: wrap;">';
+        roundData.models.forEach(modelKey => {
+            const modelName = availableModels[modelKey]?.displayName || modelKey;
+            checkboxesHTML += `
+                <div class="model-checkbox" style="padding: 8px;">
+                    <input type="checkbox" id="resubmit-model-${roundData.round}-${modelKey}" value="${modelKey}" checked>
+                    <label for="resubmit-model-${roundData.round}-${modelKey}">${modelName}</label>
+                </div>
+            `;
+        });
+        checkboxesHTML += '</div>';
+
+        analysisDiv.innerHTML = `
+            <div class="analysis-header">Inconsistency Analysis</div>
+            <div class="analysis-text" style="white-space: pre-wrap; font-family: monospace; background: var(--surface-light); padding: 15px; border-radius: 6px;">${escapeHtml(roundData.inconsistencyAnalysis)}</div>
+            ${checkboxesHTML}
+            <div class="action-buttons">
+                <button class="btn btn-primary" onclick="handleResubmit(${roundData.round})">Resubmit Analysis</button>
+                <button class="btn btn-secondary" onclick="generateCritique(${roundData.round})">Generate Detailed Critique</button>
+            </div>
+        `;
+        content.appendChild(analysisDiv);
+    }
+}
+
+// Handle resubmit
+async function handleResubmit(roundNumber) {
+    const roundData = roundsData.find(r => r.round === roundNumber);
+    if (!roundData || !roundData.inconsistencyAnalysis) return;
+
+    // Get selected models for resubmit
+    const selectedModels = [];
+    roundData.models.forEach(modelKey => {
+        const checkbox = document.getElementById(`resubmit-model-${roundNumber}-${modelKey}`);
+        if (checkbox && checkbox.checked) {
+            selectedModels.push(modelKey);
+        }
+    });
+
+    if (selectedModels.length === 0) {
+        alert('Please select at least one model to resubmit to.');
+        return;
+    }
+
+    // Use the inconsistency analysis as the new prompt
+    const newPrompt = roundData.inconsistencyAnalysis;
+    
+    // Submit the new query
+    await submitQuery(newPrompt, selectedModels, roundData.defaultModel);
 }
 
 // Create round UI
@@ -217,7 +449,7 @@ function updateRoundResults(roundDiv, roundData) {
         analysisDiv.className = 'analysis-section';
         analysisDiv.innerHTML = `
             <div class="analysis-header">Inconsistency Analysis</div>
-            <div class="analysis-text">${escapeHtml(roundData.inconsistencyAnalysis)}</div>
+            <div class="analysis-text">${renderMarkdown(roundData.inconsistencyAnalysis)}</div>
         `;
         content.appendChild(analysisDiv);
 
@@ -258,7 +490,7 @@ function createResponseCard(result) {
             thinkingDiv.className = 'thinking-section';
             thinkingDiv.innerHTML = `
                 <div class="thinking-header">Thinking Process</div>
-                <div class="thinking-content">${escapeHtml(result.thinking)}</div>
+                <div class="thinking-content">${renderMarkdown(result.thinking)}</div>
             `;
             card.appendChild(thinkingDiv);
         }
@@ -266,7 +498,7 @@ function createResponseCard(result) {
         // Add response text
         const responseText = document.createElement('div');
         responseText.className = 'response-text';
-        responseText.textContent = result.text;
+        responseText.innerHTML = renderMarkdown(result.text);
         card.appendChild(responseText);
     } else {
         const errorMessage = document.createElement('div');
@@ -323,15 +555,20 @@ async function generateCritique(roundNumber) {
             critiqueHTML += `
                 <div class="thinking-section">
                     <div class="thinking-header">Thinking Process</div>
-                    <div class="thinking-content">${escapeHtml(data.thinking)}</div>
+                    <div class="thinking-content">${renderMarkdown(data.thinking)}</div>
                 </div>
             `;
         }
 
-        critiqueHTML += `<div class="analysis-text">${escapeHtml(data.critique)}</div>`;
+        critiqueHTML += `<div class="analysis-text">${renderMarkdown(data.critique)}</div>`;
 
         critiqueDiv.innerHTML = critiqueHTML;
         content.appendChild(critiqueDiv);
+        
+        // Trigger MathJax
+        if (window.MathJax) {
+            window.MathJax.typesetPromise([critiqueDiv]);
+        }
     } catch (error) {
         console.error('Error generating critique:', error);
         loadingDiv.remove();
@@ -378,6 +615,15 @@ function escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
+}
+
+// Render markdown to HTML
+function renderMarkdown(text) {
+    if (typeof marked !== 'undefined') {
+        return marked.parse(text);
+    }
+    // Fallback if marked is not loaded
+    return escapeHtml(text);
 }
 
 // Initialize when DOM is ready

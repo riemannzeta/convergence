@@ -34,6 +34,12 @@ const google = process.env.GOOGLE_API_KEY ? new GoogleGenerativeAI(
 
 // Model configurations
 const MODELS = {
+  'gemini-3': {
+    provider: 'google',
+    displayName: 'Gemini 3',
+    modelId: 'gemini-3-pro-preview',
+    supportsThinking: true
+  },
   'claude-4-1-opus': {
     provider: 'anthropic',
     displayName: 'Claude 4.1 Opus',
@@ -44,12 +50,6 @@ const MODELS = {
     provider: 'openai',
     displayName: 'GPT-5.1',
     modelId: 'gpt-5.1-2025-11-13',
-    supportsThinking: true
-  },
-  'gemini-2.5-pro': {
-    provider: 'google',
-    displayName: 'Gemini 2.5 Pro',
-    modelId: 'gemini-2.5-pro',
     supportsThinking: true
   },
 };
@@ -208,7 +208,7 @@ app.get('/api/models', (req, res) => {
   res.json(availableModels);
 });
 
-// API endpoint to submit prompt to multiple models
+// API endpoint to submit prompt to multiple models (with streaming)
 app.post('/api/query', async (req, res) => {
   try {
     const { prompt, models, defaultModel } = req.body;
@@ -217,17 +217,33 @@ app.post('/api/query', async (req, res) => {
       return res.status(400).json({ error: 'Prompt and models are required' });
     }
 
-    // Call all selected models in parallel
-    const results = await Promise.all(
-      models.map(async (modelKey) => {
-        try {
-          const response = await callModel(modelKey, prompt);
-          return { modelKey, success: true, ...response };
-        } catch (error) {
-          return { modelKey, success: false, error: error.message };
-        }
-      })
-    );
+    // Set headers for streaming
+    res.setHeader('Content-Type', 'application/x-ndjson');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+
+    const results = [];
+
+    // Call all selected models in parallel, but stream results as they complete
+    const modelPromises = models.map(async (modelKey) => {
+      try {
+        const response = await callModel(modelKey, prompt);
+        const result = { modelKey, success: true, ...response };
+        results.push(result);
+
+        // Stream this result immediately
+        res.write(JSON.stringify({ type: 'result', data: result }) + '\n');
+      } catch (error) {
+        const result = { modelKey, success: false, error: error.message };
+        results.push(result);
+
+        // Stream this error immediately
+        res.write(JSON.stringify({ type: 'result', data: result }) + '\n');
+      }
+    });
+
+    // Wait for all models to complete
+    await Promise.all(modelPromises);
 
     // Analyze inconsistencies using the default model
     const successfulResults = results.filter(r => r.success);
@@ -239,8 +255,8 @@ app.post('/api/query', async (req, res) => {
 Original prompt: "${prompt}"
 
 Responses:
-${successfulResults.map((r, i) => `
-Model ${i + 1} (${r.model}):
+${successfulResults.map((r) => `
+${r.model}:
 ${r.text}
 `).join('\n---\n')}
 
@@ -258,14 +274,25 @@ Keep your analysis concise and focused on meaningful differences.`;
       }
     }
 
-    res.json({
-      results,
-      inconsistencyAnalysis,
-      timestamp: new Date().toISOString()
-    });
+    // Stream the inconsistency analysis
+    res.write(JSON.stringify({
+      type: 'analysis',
+      data: {
+        inconsistencyAnalysis,
+        timestamp: new Date().toISOString()
+      }
+    }) + '\n');
+
+    // End the stream
+    res.end();
   } catch (error) {
     console.error('Error processing query:', error);
-    res.status(500).json({ error: error.message });
+    if (!res.headersSent) {
+      res.status(500).json({ error: error.message });
+    } else {
+      res.write(JSON.stringify({ type: 'error', data: { error: error.message } }) + '\n');
+      res.end();
+    }
   }
 });
 
@@ -283,8 +310,8 @@ app.post('/api/critique', async (req, res) => {
 Original prompt: "${originalPrompt}"
 
 Model responses:
-${results.map((r, i) => `
-Model ${i + 1} (${r.model}):
+${results.map((r) => `
+${r.model}:
 ${r.text}
 `).join('\n---\n')}
 
