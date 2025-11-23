@@ -109,7 +109,7 @@ async function handleSubmit() {
 }
 
 // Submit query (shared by main submit and resubmit)
-async function submitQuery(prompt, selectedModels, defaultModel) {
+async function submitQuery(prompt, selectedModels, defaultModel, previousRoundContext = null) {
     // Collapse previous rounds
     collapsePreviousRounds();
 
@@ -122,7 +122,8 @@ async function submitQuery(prompt, selectedModels, defaultModel) {
         defaultModel: defaultModel,
         results: [],
         inconsistencyAnalysis: null,
-        critique: null
+        agreementLevel: null,
+        previousRoundContext: previousRoundContext
     };
     roundsData.push(roundData);
 
@@ -145,7 +146,8 @@ async function submitQuery(prompt, selectedModels, defaultModel) {
             body: JSON.stringify({
                 prompt: prompt,
                 models: selectedModels,
-                defaultModel: defaultModel
+                defaultModel: defaultModel,
+                previousRoundContext: previousRoundContext
             })
         });
 
@@ -186,19 +188,82 @@ async function submitQuery(prompt, selectedModels, defaultModel) {
 
 // Handle streaming message
 function handleStreamMessage(message, roundDiv, roundData) {
-    if (message.type === 'result') {
+    if (message.type === 'generated_prompt') {
+        // Display the generated prompt for the specific model
+        const { modelKey, prompt } = message.data;
+        displayGeneratedPrompt(roundDiv, modelKey, prompt);
+    } else if (message.type === 'result') {
         // Update the placeholder card for this model
         const result = message.data;
         roundData.results.push(result);
         updateResponseCard(roundDiv, result);
-    } else if (message.type === 'analysis') {
-        // Add inconsistency analysis
-        roundData.inconsistencyAnalysis = message.data.inconsistencyAnalysis;
+    } else if (message.type === 'analysis_start') {
+        // Initialize analysis section
+        roundData.inconsistencyAnalysis = '';
+        roundData.agreementLevel = 'yellow'; // Default
         addInconsistencyAnalysis(roundDiv, roundData);
+    } else if (message.type === 'analysis_chunk') {
+        // Append chunk to analysis
+        const chunk = message.data.chunk;
+        roundData.inconsistencyAnalysis += chunk;
+        updateInconsistencyAnalysis(roundDiv, roundData);
+    } else if (message.type === 'analysis_agreement') {
+        // Update agreement level color
+        roundData.agreementLevel = message.data.agreementLevel;
+        updateAnalysisColor(roundDiv, roundData);
+    } else if (message.type === 'analysis') {
+        // Legacy/Final analysis update (optional, but good for fallback)
+        roundData.inconsistencyAnalysis = message.data.inconsistencyAnalysis;
+        roundData.agreementLevel = message.data.agreementLevel;
+        updateInconsistencyAnalysis(roundDiv, roundData);
+        updateAnalysisColor(roundDiv, roundData);
     } else if (message.type === 'error') {
         console.error('Stream error:', message.data.error);
         showError(roundDiv.querySelector('.round-content'), message.data.error);
     }
+}
+
+// Display generated prompt in the card
+function displayGeneratedPrompt(roundDiv, modelKey, prompt) {
+    const card = roundDiv.querySelector(`#response-card-${modelKey}`);
+    if (!card) return;
+
+    // Check if prompt container already exists
+    let promptContainer = card.querySelector('.generated-prompt-container');
+    if (!promptContainer) {
+        promptContainer = document.createElement('div');
+        promptContainer.className = 'generated-prompt-container';
+        promptContainer.style.marginBottom = '15px';
+        promptContainer.style.padding = '10px';
+        promptContainer.style.background = 'var(--surface-light)';
+        promptContainer.style.borderRadius = '6px';
+        promptContainer.style.borderLeft = '3px solid var(--primary-color)';
+
+        const label = document.createElement('div');
+        label.textContent = 'Follow-up Prompt:';
+        label.style.fontWeight = 'bold';
+        label.style.fontSize = '0.85rem';
+        label.style.color = 'var(--text-secondary)';
+        label.style.marginBottom = '5px';
+
+        const text = document.createElement('div');
+        text.className = 'generated-prompt-text';
+        text.style.fontSize = '0.9rem';
+        text.style.fontStyle = 'italic';
+
+        promptContainer.appendChild(label);
+        promptContainer.appendChild(text);
+
+        // Insert after header
+        const header = card.querySelector('.response-header');
+        if (header && header.nextSibling) {
+            card.insertBefore(promptContainer, header.nextSibling);
+        } else {
+            card.appendChild(promptContainer);
+        }
+    }
+
+    promptContainer.querySelector('.generated-prompt-text').textContent = prompt;
 }
 
 // Create round UI with placeholder cards
@@ -217,14 +282,16 @@ function createRoundUIWithPlaceholders(roundData) {
     const content = document.createElement('div');
     content.className = 'round-content';
 
-    const originalPromptDiv = document.createElement('div');
-    originalPromptDiv.className = 'original-prompt';
-    originalPromptDiv.innerHTML = `
-        <div class="original-prompt-label">Prompt</div>
-        <div class="original-prompt-text">${escapeHtml(roundData.prompt)}</div>
-    `;
-
-    content.appendChild(originalPromptDiv);
+    // Only show global prompt if it's Round 1 (no previous context)
+    if (!roundData.previousRoundContext) {
+        const originalPromptDiv = document.createElement('div');
+        originalPromptDiv.className = 'original-prompt';
+        originalPromptDiv.innerHTML = `
+            <div class="original-prompt-label">Prompt</div>
+            <div class="original-prompt-text">${escapeHtml(roundData.prompt)}</div>
+        `;
+        content.appendChild(originalPromptDiv);
+    }
 
     // Create placeholder response cards
     const responsesGrid = document.createElement('div');
@@ -233,7 +300,7 @@ function createRoundUIWithPlaceholders(roundData) {
 
     for (const modelKey of roundData.models) {
         const modelConfig = availableModels[modelKey];
-        const placeholderCard = createPlaceholderCard(modelKey, modelConfig.displayName);
+        const placeholderCard = createPlaceholderCard(modelKey, modelConfig ? modelConfig.displayName : modelKey);
         responsesGrid.appendChild(placeholderCard);
     }
 
@@ -276,8 +343,11 @@ function createPlaceholderCard(modelKey, displayName) {
 
 // Update response card with actual result
 function updateResponseCard(roundDiv, result) {
-    const card = document.getElementById(`response-card-${result.modelKey}`);
+    const card = roundDiv.querySelector(`#response-card-${result.modelKey}`);
     if (!card) return;
+
+    // Preserve generated prompt if it exists
+    const generatedPrompt = card.querySelector('.generated-prompt-container');
 
     // Clear loading state
     card.className = result.success ? 'response-card' : 'response-card error';
@@ -298,6 +368,11 @@ function updateResponseCard(roundDiv, result) {
     header.appendChild(statusBadge);
     card.appendChild(header);
 
+    // Re-attach generated prompt
+    if (generatedPrompt) {
+        card.appendChild(generatedPrompt);
+    }
+
     if (result.success) {
         // Add thinking if available
         if (result.thinking) {
@@ -315,7 +390,7 @@ function updateResponseCard(roundDiv, result) {
         responseText.className = 'response-text';
         responseText.innerHTML = renderMarkdown(result.text);
         card.appendChild(responseText);
-        
+
         // Trigger MathJax
         if (window.MathJax) {
             window.MathJax.typesetPromise([card]);
@@ -332,40 +407,126 @@ function updateResponseCard(roundDiv, result) {
 function addInconsistencyAnalysis(roundDiv, roundData) {
     const content = roundDiv.querySelector('.round-content');
 
-    if (roundData.inconsistencyAnalysis) {
-        const analysisDiv = document.createElement('div');
-        analysisDiv.className = 'analysis-section';
-        
-        // Create checkboxes for models
-        let checkboxesHTML = '<div class="model-selection-resubmit" style="margin: 15px 0; display: flex; gap: 10px; flex-wrap: wrap;">';
-        roundData.models.forEach(modelKey => {
-            const modelName = availableModels[modelKey]?.displayName || modelKey;
-            checkboxesHTML += `
-                <div class="model-checkbox" style="padding: 8px;">
-                    <input type="checkbox" id="resubmit-model-${roundData.round}-${modelKey}" value="${modelKey}" checked>
-                    <label for="resubmit-model-${roundData.round}-${modelKey}">${modelName}</label>
-                </div>
-            `;
-        });
-        checkboxesHTML += '</div>';
+    // Check if already exists
+    if (content.querySelector('.analysis-section')) return;
 
-        analysisDiv.innerHTML = `
-            <div class="analysis-header">Inconsistency Analysis</div>
-            <div class="analysis-text" style="white-space: pre-wrap; font-family: monospace; background: var(--surface-light); padding: 15px; border-radius: 6px;">${escapeHtml(roundData.inconsistencyAnalysis)}</div>
-            ${checkboxesHTML}
-            <div class="action-buttons">
-                <button class="btn btn-primary" onclick="handleResubmit(${roundData.round})">Resubmit Analysis</button>
-                <button class="btn btn-secondary" onclick="generateCritique(${roundData.round})">Generate Detailed Critique</button>
+    const analysisDiv = document.createElement('div');
+    // Add color class based on agreement level
+    const colorClass = roundData.agreementLevel || 'yellow';
+    analysisDiv.className = `analysis-section ${colorClass}`;
+
+    // Create checkboxes for models
+    let checkboxesHTML = '<div class="model-selection-resubmit" style="margin: 15px 0; display: flex; gap: 10px; flex-wrap: wrap;">';
+    roundData.models.forEach(modelKey => {
+        const modelName = availableModels[modelKey]?.displayName || modelKey;
+        checkboxesHTML += `
+            <div class="model-checkbox" style="padding: 8px;">
+                <input type="checkbox" id="resubmit-model-${roundData.round}-${modelKey}" value="${modelKey}" checked>
+                <label for="resubmit-model-${roundData.round}-${modelKey}">${modelName}</label>
             </div>
         `;
-        content.appendChild(analysisDiv);
+    });
+    checkboxesHTML += '</div>';
+
+    analysisDiv.innerHTML = `
+        <div class="analysis-header" style="display: flex; justify-content: space-between; align-items: center;">
+            <span>Inconsistency Analysis</span>
+            <button class="btn btn-secondary" style="padding: 4px 8px; font-size: 0.8rem;" onclick="toggleEditAnalysis(${roundData.round})">Edit</button>
+        </div>
+        <div id="analysis-view-${roundData.round}" class="analysis-text">
+            ${roundData.inconsistencyAnalysis ? renderMarkdown(roundData.inconsistencyAnalysis) : '<div class="loading">Waiting for analysis</div>'}
+        </div>
+        <div id="analysis-edit-${roundData.round}" style="display: none;">
+            <textarea id="analysis-textarea-${roundData.round}" rows="10" style="width: 100%; margin-bottom: 10px;">${roundData.inconsistencyAnalysis || ''}</textarea>
+        </div>
+        
+        <div style="margin-top: 15px;">
+            <details>
+                <summary style="cursor: pointer; color: var(--primary-color); font-weight: 600; margin-bottom: 10px;">Additional Instructions (Optional)</summary>
+                <textarea id="additional-instructions-${roundData.round}" rows="3" placeholder="Enter any specific instructions or questions to be included in the follow-up prompts..." style="width: 100%; margin-top: 5px;"></textarea>
+            </details>
+        </div>
+
+        ${checkboxesHTML}
+        <div class="action-buttons">
+            <button class="btn btn-primary" onclick="handleResubmit(${roundData.round})" title="Resubmit the inconsistency analysis to each model for further analysis">Resubmit</button>
+        </div>
+    `;
+    content.appendChild(analysisDiv);
+
+    // Trigger MathJax
+    if (window.MathJax) {
+        window.MathJax.typesetPromise([analysisDiv]);
+    }
+}
+
+// Update inconsistency analysis text
+function updateInconsistencyAnalysis(roundDiv, roundData) {
+    const viewDiv = roundDiv.querySelector(`#analysis-view-${roundData.round}`);
+    const textarea = roundDiv.querySelector(`#analysis-textarea-${roundData.round}`);
+
+    if (viewDiv) {
+        viewDiv.innerHTML = renderMarkdown(roundData.inconsistencyAnalysis);
+        if (window.MathJax) window.MathJax.typesetPromise([viewDiv]);
+    }
+
+    if (textarea) {
+        textarea.value = roundData.inconsistencyAnalysis;
+    }
+
+    // If analysis section doesn't exist yet (e.g. receiving chunk before start message processed?), create it
+    if (!viewDiv) {
+        addInconsistencyAnalysis(roundDiv, roundData);
+    }
+}
+
+// Update analysis color
+function updateAnalysisColor(roundDiv, roundData) {
+    const analysisDiv = roundDiv.querySelector('.analysis-section');
+    if (analysisDiv) {
+        // Remove old color classes
+        analysisDiv.classList.remove('red', 'yellow', 'green');
+        // Add new color class
+        if (roundData.agreementLevel) {
+            analysisDiv.classList.add(roundData.agreementLevel);
+        }
+    }
+}
+
+// Toggle edit mode for analysis
+function toggleEditAnalysis(roundNumber) {
+    const viewDiv = document.getElementById(`analysis-view-${roundNumber}`);
+    const editDiv = document.getElementById(`analysis-edit-${roundNumber}`);
+
+    if (viewDiv.style.display === 'none') {
+        viewDiv.style.display = 'block';
+        editDiv.style.display = 'none';
+        // Update the data with edited text
+        const textarea = document.getElementById(`analysis-textarea-${roundNumber}`);
+        const roundData = roundsData.find(r => r.round === roundNumber);
+        if (roundData) {
+            roundData.inconsistencyAnalysis = textarea.value;
+            viewDiv.innerHTML = renderMarkdown(textarea.value);
+            if (window.MathJax) window.MathJax.typesetPromise([viewDiv]);
+        }
+    } else {
+        viewDiv.style.display = 'none';
+        editDiv.style.display = 'block';
     }
 }
 
 // Handle resubmit
 async function handleResubmit(roundNumber) {
     const roundData = roundsData.find(r => r.round === roundNumber);
-    if (!roundData || !roundData.inconsistencyAnalysis) return;
+    if (!roundData) return;
+
+    // Get current analysis text (in case it was edited)
+    const textarea = document.getElementById(`analysis-textarea-${roundNumber}`);
+    const currentAnalysis = textarea ? textarea.value : roundData.inconsistencyAnalysis;
+
+    // Get additional instructions
+    const instructionsTextarea = document.getElementById(`additional-instructions-${roundNumber}`);
+    const additionalInstructions = instructionsTextarea ? instructionsTextarea.value.trim() : '';
 
     // Get selected models for resubmit
     const selectedModels = [];
@@ -381,199 +542,17 @@ async function handleResubmit(roundNumber) {
         return;
     }
 
-    // Use the inconsistency analysis as the new prompt
-    const newPrompt = roundData.inconsistencyAnalysis;
-    
-    // Submit the new query
-    await submitQuery(newPrompt, selectedModels, roundData.defaultModel);
-}
+    // Prepare context for Round 2
+    const previousRoundContext = {
+        originalPrompt: roundData.prompt,
+        previousResponses: roundData.results.filter(r => r.success),
+        inconsistencyAnalysis: currentAnalysis,
+        additionalInstructions: additionalInstructions
+    };
 
-// Create round UI
-function createRoundUI(roundData) {
-    const roundDiv = document.createElement('div');
-    roundDiv.className = 'round';
-    roundDiv.id = `round-${roundData.round}`;
-
-    const header = document.createElement('div');
-    header.className = 'round-header';
-    header.innerHTML = `
-        <h2>Round ${roundData.round}</h2>
-        <button class="btn btn-secondary toggle-btn" onclick="toggleRound(${roundData.round})">Collapse</button>
-    `;
-
-    const content = document.createElement('div');
-    content.className = 'round-content';
-
-    const originalPromptDiv = document.createElement('div');
-    originalPromptDiv.className = 'original-prompt';
-    originalPromptDiv.innerHTML = `
-        <div class="original-prompt-label">Prompt</div>
-        <div class="original-prompt-text">${escapeHtml(roundData.prompt)}</div>
-    `;
-
-    const loadingDiv = document.createElement('div');
-    loadingDiv.className = 'loading';
-    loadingDiv.textContent = 'Querying models';
-
-    content.appendChild(originalPromptDiv);
-    content.appendChild(loadingDiv);
-
-    roundDiv.appendChild(header);
-    roundDiv.appendChild(content);
-
-    return roundDiv;
-}
-
-// Update round with results
-function updateRoundResults(roundDiv, roundData) {
-    const content = roundDiv.querySelector('.round-content');
-
-    // Remove loading message
-    const loading = content.querySelector('.loading');
-    if (loading) loading.remove();
-
-    // Add responses
-    const responsesGrid = document.createElement('div');
-    responsesGrid.className = 'responses-grid';
-
-    for (const result of roundData.results) {
-        const responseCard = createResponseCard(result);
-        responsesGrid.appendChild(responseCard);
-    }
-
-    content.appendChild(responsesGrid);
-
-    // Add inconsistency analysis
-    if (roundData.inconsistencyAnalysis) {
-        const analysisDiv = document.createElement('div');
-        analysisDiv.className = 'analysis-section';
-        analysisDiv.innerHTML = `
-            <div class="analysis-header">Inconsistency Analysis</div>
-            <div class="analysis-text">${renderMarkdown(roundData.inconsistencyAnalysis)}</div>
-        `;
-        content.appendChild(analysisDiv);
-
-        // Add action buttons
-        const actionButtons = document.createElement('div');
-        actionButtons.className = 'action-buttons';
-        actionButtons.innerHTML = `
-            <button class="btn btn-primary" onclick="generateCritique(${roundData.round})">Generate Detailed Critique</button>
-        `;
-        content.appendChild(actionButtons);
-    }
-}
-
-// Create response card
-function createResponseCard(result) {
-    const card = document.createElement('div');
-    card.className = result.success ? 'response-card' : 'response-card error';
-
-    const header = document.createElement('div');
-    header.className = 'response-header';
-
-    const modelName = document.createElement('div');
-    modelName.className = 'model-name';
-    modelName.textContent = result.model || result.modelKey;
-
-    const statusBadge = document.createElement('div');
-    statusBadge.className = result.success ? 'status-badge success' : 'status-badge error';
-    statusBadge.textContent = result.success ? 'Success' : 'Error';
-
-    header.appendChild(modelName);
-    header.appendChild(statusBadge);
-    card.appendChild(header);
-
-    if (result.success) {
-        // Add thinking if available
-        if (result.thinking) {
-            const thinkingDiv = document.createElement('div');
-            thinkingDiv.className = 'thinking-section';
-            thinkingDiv.innerHTML = `
-                <div class="thinking-header">Thinking Process</div>
-                <div class="thinking-content">${renderMarkdown(result.thinking)}</div>
-            `;
-            card.appendChild(thinkingDiv);
-        }
-
-        // Add response text
-        const responseText = document.createElement('div');
-        responseText.className = 'response-text';
-        responseText.innerHTML = renderMarkdown(result.text);
-        card.appendChild(responseText);
-    } else {
-        const errorMessage = document.createElement('div');
-        errorMessage.className = 'error-message';
-        errorMessage.textContent = result.error;
-        card.appendChild(errorMessage);
-    }
-
-    return card;
-}
-
-// Generate critique
-async function generateCritique(roundNumber) {
-    const roundData = roundsData.find(r => r.round === roundNumber);
-    if (!roundData) return;
-
-    const roundDiv = document.getElementById(`round-${roundNumber}`);
-    const content = roundDiv.querySelector('.round-content');
-
-    // Remove action buttons
-    const actionButtons = content.querySelector('.action-buttons');
-    if (actionButtons) actionButtons.remove();
-
-    // Show loading
-    const loadingDiv = document.createElement('div');
-    loadingDiv.className = 'loading';
-    loadingDiv.textContent = 'Generating detailed critique';
-    content.appendChild(loadingDiv);
-
-    try {
-        const response = await fetch(`${API_BASE}/api/critique`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                originalPrompt: roundData.prompt,
-                results: roundData.results.filter(r => r.success),
-                defaultModel: roundData.defaultModel
-            })
-        });
-
-        const data = await response.json();
-        roundData.critique = data.critique;
-
-        // Remove loading
-        loadingDiv.remove();
-
-        // Add critique section
-        const critiqueDiv = document.createElement('div');
-        critiqueDiv.className = 'critique-section';
-
-        let critiqueHTML = `<div class="critique-header">Detailed Critique</div>`;
-
-        if (data.thinking) {
-            critiqueHTML += `
-                <div class="thinking-section">
-                    <div class="thinking-header">Thinking Process</div>
-                    <div class="thinking-content">${renderMarkdown(data.thinking)}</div>
-                </div>
-            `;
-        }
-
-        critiqueHTML += `<div class="analysis-text">${renderMarkdown(data.critique)}</div>`;
-
-        critiqueDiv.innerHTML = critiqueHTML;
-        content.appendChild(critiqueDiv);
-        
-        // Trigger MathJax
-        if (window.MathJax) {
-            window.MathJax.typesetPromise([critiqueDiv]);
-        }
-    } catch (error) {
-        console.error('Error generating critique:', error);
-        loadingDiv.remove();
-        showError(content, 'Error generating critique. Please check the console for details.');
-    }
+    // Submit the query with context
+    // We use the original prompt as the base, but the server will use the context to generate new prompts
+    await submitQuery(roundData.prompt, selectedModels, roundData.defaultModel, previousRoundContext);
 }
 
 // Collapse previous rounds
@@ -617,13 +596,28 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
-// Render markdown to HTML
+// Render markdown to HTML with MathJax protection
 function renderMarkdown(text) {
-    if (typeof marked !== 'undefined') {
-        return marked.parse(text);
+    if (typeof marked === 'undefined') {
+        return escapeHtml(text);
     }
-    // Fallback if marked is not loaded
-    return escapeHtml(text);
+
+    // Protect math blocks
+    const mathBlocks = [];
+    const protectedText = text.replace(/(\$\$[\s\S]*?\$\$|\\\[[\s\S]*?\\\]|\\\(.*?\\\)|(?<!\\)\$[^$]*?\$)/g, (match) => {
+        mathBlocks.push(match);
+        return `MATHBLOCK${mathBlocks.length - 1}PLACEHOLDER`;
+    });
+
+    // Render markdown
+    let html = marked.parse(protectedText);
+
+    // Restore math blocks
+    html = html.replace(/MATHBLOCK(\d+)PLACEHOLDER/g, (match, index) => {
+        return mathBlocks[parseInt(index)];
+    });
+
+    return html;
 }
 
 // Initialize when DOM is ready
@@ -632,3 +626,5 @@ if (document.readyState === 'loading') {
 } else {
     init();
 }
+
+

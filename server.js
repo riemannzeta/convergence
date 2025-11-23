@@ -54,8 +54,10 @@ const MODELS = {
   },
 };
 
-// Call Anthropic API
-async function callAnthropic(modelConfig, prompt, systemPrompt = null) {
+
+
+// Stream Anthropic API
+async function streamAnthropic(modelConfig, prompt, onChunk, systemPrompt = null) {
   if (!anthropic) {
     throw new Error('Anthropic API key not configured');
   }
@@ -66,43 +68,34 @@ async function callAnthropic(modelConfig, prompt, systemPrompt = null) {
     model: modelConfig.modelId,
     max_tokens: 4096,
     messages: messages,
+    stream: true,
   };
 
   if (systemPrompt) {
     params.system = systemPrompt;
   }
 
-  // Add thinking support for models that support it
-  if (modelConfig.supportsThinking) {
-    params.thinking = {
-      type: 'enabled',
-      budget_tokens: 2000
-    };
-  }
+  const stream = await anthropic.messages.create(params);
 
-  const response = await anthropic.messages.create(params);
+  let fullText = '';
 
-  let thinkingContent = '';
-  let textContent = '';
-
-  for (const block of response.content) {
-    if (block.type === 'thinking') {
-      thinkingContent = block.thinking;
-    } else if (block.type === 'text') {
-      textContent += block.text;
+  for await (const chunk of stream) {
+    if (chunk.type === 'content_block_delta' && chunk.delta.type === 'text_delta') {
+      const text = chunk.delta.text;
+      fullText += text;
+      onChunk(text);
     }
   }
 
   return {
-    text: textContent,
-    thinking: thinkingContent,
-    model: modelConfig.displayName,
-    usage: response.usage
+    text: fullText,
+    thinking: '', // Streaming thinking not supported in this simple implementation yet
+    model: modelConfig.displayName
   };
 }
 
-// Call OpenAI API
-async function callOpenAI(modelConfig, prompt, systemPrompt = null) {
+// Stream OpenAI API
+async function streamOpenAI(modelConfig, prompt, onChunk, systemPrompt = null) {
   if (!openai) {
     throw new Error('OpenAI API key not configured');
   }
@@ -115,22 +108,32 @@ async function callOpenAI(modelConfig, prompt, systemPrompt = null) {
 
   messages.push({ role: 'user', content: prompt });
 
-  const response = await openai.chat.completions.create({
+  const stream = await openai.chat.completions.create({
     model: modelConfig.modelId,
     messages: messages,
     max_completion_tokens: 4096,
+    stream: true,
   });
 
+  let fullText = '';
+
+  for await (const chunk of stream) {
+    const text = chunk.choices[0]?.delta?.content || '';
+    if (text) {
+      fullText += text;
+      onChunk(text);
+    }
+  }
+
   return {
-    text: response.choices[0].message.content,
-    thinking: '', // OpenAI models don't expose thinking
-    model: modelConfig.displayName,
-    usage: response.usage
+    text: fullText,
+    thinking: '',
+    model: modelConfig.displayName
   };
 }
 
-// Call Google Gemini API
-async function callGemini(modelConfig, prompt, systemPrompt = null) {
+// Stream Google Gemini API
+async function streamGemini(modelConfig, prompt, onChunk, systemPrompt = null) {
   if (!google) {
     throw new Error('Google API key not configured');
   }
@@ -144,36 +147,30 @@ async function callGemini(modelConfig, prompt, systemPrompt = null) {
     maxOutputTokens: 4096,
   };
 
-  const result = await model.generateContent({
+  const result = await model.generateContentStream({
     contents: [{ role: 'user', parts: [{ text: prompt }] }],
     generationConfig
   });
 
-  const response = result.response;
-  let thinkingContent = '';
-  let textContent = '';
+  let fullText = '';
 
-  // Extract thinking and text from response
-  for (const candidate of response.candidates || []) {
-    for (const part of candidate.content?.parts || []) {
-      if (part.thought) {
-        thinkingContent += part.thought + '\n';
-      } else if (part.text) {
-        textContent += part.text;
-      }
+  for await (const chunk of result.stream) {
+    const text = chunk.text();
+    if (text) {
+      fullText += text;
+      onChunk(text);
     }
   }
 
   return {
-    text: textContent,
-    thinking: thinkingContent.trim(),
-    model: modelConfig.displayName,
-    usage: response.usageMetadata
+    text: fullText,
+    thinking: '',
+    model: modelConfig.displayName
   };
 }
 
-// Generic model caller
-async function callModel(modelKey, prompt, systemPrompt = null) {
+// Generic model streamer
+async function streamModel(modelKey, prompt, onChunk, systemPrompt = null) {
   const modelConfig = MODELS[modelKey];
 
   if (!modelConfig) {
@@ -181,14 +178,27 @@ async function callModel(modelKey, prompt, systemPrompt = null) {
   }
 
   if (modelConfig.provider === 'anthropic') {
-    return await callAnthropic(modelConfig, prompt, systemPrompt);
+    return await streamAnthropic(modelConfig, prompt, onChunk, systemPrompt);
   } else if (modelConfig.provider === 'openai') {
-    return await callOpenAI(modelConfig, prompt, systemPrompt);
+    return await streamOpenAI(modelConfig, prompt, onChunk, systemPrompt);
   } else if (modelConfig.provider === 'google') {
-    return await callGemini(modelConfig, prompt, systemPrompt);
+    return await streamGemini(modelConfig, prompt, onChunk, systemPrompt);
   } else {
     throw new Error(`Unknown provider: ${modelConfig.provider}`);
   }
+}
+
+// Generic model caller (wraps streamer for backward compatibility)
+async function callModel(modelKey, prompt, systemPrompt = null) {
+  let fullText = '';
+  const result = await streamModel(modelKey, prompt, (chunk) => {
+    fullText += chunk;
+  }, systemPrompt);
+
+  return {
+    ...result,
+    text: fullText
+  };
 }
 
 // API endpoint to get available models
@@ -209,9 +219,10 @@ app.get('/api/models', (req, res) => {
 });
 
 // API endpoint to submit prompt to multiple models (with streaming)
+// API endpoint to submit prompt to multiple models (with streaming)
 app.post('/api/query', async (req, res) => {
   try {
-    const { prompt, models, defaultModel } = req.body;
+    const { prompt, models, defaultModel, previousRoundContext } = req.body;
 
     if (!prompt || !models || models.length === 0) {
       return res.status(400).json({ error: 'Prompt and models are required' });
@@ -223,11 +234,67 @@ app.post('/api/query', async (req, res) => {
     res.setHeader('Connection', 'keep-alive');
 
     const results = [];
+    let promptsToUse = {}; // Map modelKey -> prompt
+
+    // If this is a resubmission (Round 2+), generate custom prompts first
+    if (previousRoundContext) {
+      const { originalPrompt, previousResponses, inconsistencyAnalysis, additionalInstructions } = previousRoundContext;
+
+      // Generate follow-up prompts for each model
+      const promptGenerationPromises = models.map(async (modelKey) => {
+        const prevResponse = previousResponses.find(r => r.modelKey === modelKey);
+        const prevResponseText = prevResponse ? prevResponse.text : "No response in previous round.";
+
+        let instructionsPart = '';
+        if (additionalInstructions) {
+          instructionsPart = `4. Incorporate the following specific instructions/questions: "${additionalInstructions}"`;
+        }
+
+        const generationPrompt = `You are coordinating a discussion between AI models to resolve inconsistencies.
+        
+Original Prompt: "${originalPrompt}"
+
+Inconsistency Analysis:
+${inconsistencyAnalysis}
+
+This model (${modelKey}) previously answered:
+${prevResponseText}
+
+Please frame a follow-up prompt for ${modelKey} that:
+1. Points out the agreements and disagreements between its response and the other models (based on the analysis).
+2. Asks it to reconsider or clarify its position in light of this information.
+3. Is direct and specific.
+${instructionsPart}
+
+Return ONLY the prompt text to send to the model.`;
+
+        try {
+          const response = await callModel(defaultModel, generationPrompt);
+          const generatedPrompt = response.text.trim();
+          promptsToUse[modelKey] = generatedPrompt;
+
+          // Stream the generated prompt to the client
+          res.write(JSON.stringify({
+            type: 'generated_prompt',
+            data: { modelKey, prompt: generatedPrompt }
+          }) + '\n');
+        } catch (error) {
+          console.error(`Error generating prompt for ${modelKey}:`, error);
+          promptsToUse[modelKey] = prompt; // Fallback to original prompt
+        }
+      });
+
+      await Promise.all(promptGenerationPromises);
+    } else {
+      // Round 1: Use the original prompt for all models
+      models.forEach(key => promptsToUse[key] = prompt);
+    }
 
     // Call all selected models in parallel, but stream results as they complete
     const modelPromises = models.map(async (modelKey) => {
       try {
-        const response = await callModel(modelKey, prompt);
+        const modelPrompt = promptsToUse[modelKey];
+        const response = await callModel(modelKey, modelPrompt);
         const result = { modelKey, success: true, ...response };
         results.push(result);
 
@@ -248,9 +315,11 @@ app.post('/api/query', async (req, res) => {
     // Analyze inconsistencies using the default model
     const successfulResults = results.filter(r => r.success);
 
-    let inconsistencyAnalysis = null;
     if (successfulResults.length > 1 && defaultModel) {
       const analysisPrompt = `You are analyzing responses from multiple AI models to the same prompt. Please identify any inconsistencies or disagreements between the responses.
+
+The prompt was submitted to: ${models.join(', ')}.
+Responses received: ${successfulResults.length}/${models.length}.
 
 Original prompt: "${prompt}"
 
@@ -260,28 +329,67 @@ ${r.model}:
 ${r.text}
 `).join('\n---\n')}
 
-Please provide a brief summary of:
-1. Any significant inconsistencies or disagreements between the responses
-2. If the responses are consistent, confirm that they agree
+Please provide a response in the following format:
+1. A color code: RED (total disagreement), YELLOW (partial agreement/disagreement), or GREEN (complete agreement).
+2. A detailed analysis in Markdown format.
 
-Keep your analysis concise and focused on meaningful differences.`;
+Start your response with the color code on the first line (e.g., "COLOR: RED"), followed by the analysis.
+The analysis should explain the inconsistencies and how they were generated.`;
 
       try {
-        const analysis = await callModel(defaultModel, analysisPrompt);
-        inconsistencyAnalysis = analysis.text;
+        let fullText = '';
+        let agreementLevel = 'yellow';
+        let colorParsed = false;
+
+        // Send initial analysis start message
+        res.write(JSON.stringify({
+          type: 'analysis_start',
+          data: { timestamp: new Date().toISOString() }
+        }) + '\n');
+
+        await streamModel(defaultModel, analysisPrompt, (chunk) => {
+          fullText += chunk;
+
+          // Try to parse color if not yet parsed
+          if (!colorParsed) {
+            const colorMatch = fullText.match(/^COLOR:\s*(RED|YELLOW|GREEN)/i);
+            if (colorMatch) {
+              agreementLevel = colorMatch[1].toLowerCase();
+              colorParsed = true;
+
+              // Send agreement level update
+              res.write(JSON.stringify({
+                type: 'analysis_agreement',
+                data: { agreementLevel }
+              }) + '\n');
+
+              // Remove the color line from the displayed text
+              // We only stream the content AFTER the color line
+              const contentStart = fullText.indexOf('\n');
+              if (contentStart !== -1) {
+                // We have passed the color line, stream the rest
+                // But we need to be careful not to re-stream what we already processed
+                // For simplicity in this streaming implementation, we'll handle the display cleanup on the client
+                // or just stream the raw chunk and let client handle it.
+                // Actually, let's just stream the raw chunk and let the client parse/hide the color line.
+              }
+            }
+          }
+
+          res.write(JSON.stringify({
+            type: 'analysis_chunk',
+            data: { chunk }
+          }) + '\n');
+        });
+
       } catch (error) {
         console.error('Error analyzing inconsistencies:', error);
+        res.write(JSON.stringify({
+          type: 'error',
+          data: { error: 'Error generating analysis: ' + error.message }
+        }) + '\n');
       }
     }
-
-    // Stream the inconsistency analysis
-    res.write(JSON.stringify({
-      type: 'analysis',
-      data: {
-        inconsistencyAnalysis,
-        timestamp: new Date().toISOString()
-      }
-    }) + '\n');
 
     // End the stream
     res.end();
